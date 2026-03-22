@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.2] - 2026-03-23
+
+### Added
+- Re-synchronized repository with latest local changes.
+- Updated project metadata and versioning.
+
 ## [1.0.1] - 2026-03-22
 
 ### Added

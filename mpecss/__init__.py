@@ -12,6 +12,6 @@ Subpackages:
     benchmarks/     - MacMPEC / NOSBENCH loaders, known optima
     helpers/        - Solver wrapper, utilities, B-stationarity, turbo mode
 """
-__version__ = '1.0.1'
+__version__ = '1.0.2'
 
 from mpecss.phase_2.mpecss import run_mpecss  # noqa: F401
