@@ -1,5 +1,10 @@
 """
-MacMPEC problem loader and common complementarity utilities.
+The "Problem Translator" (MacMPEC): Turning files into math.
+
+The MacMPEC suite contains many real-world math problems. 
+This module acts as a translator — it reads the problem 
+files and turns them into a format the solver can 
+understand (CasADi models).
 """
 
 from __future__ import annotations

@@ -1,34 +1,14 @@
 """
-Branch NLP (BNLP) polishing for MPECSS.
+The Final Polish: Turning a "Good" solution into a "Great" one.
 
-After MPECSS converges to an approximate solution, the complementarity
-constraints still introduce near-degeneracy in the KKT system.  BNLP
-polishing removes this degeneracy by:
+When the main solver (Phase II) finishes, the solution is usually 
+very close to the truth, but it might be slightly "fuzzy" due to 
+the smoothing process.
 
-  1. Identifying the active-set partition from the approximate solution:
-       I1 = {i : G_i ≈ 0}  →  fix G_i = 0, keep H_i ≥ 0
-       I2 = {i : H_i ≈ 0}  →  keep G_i ≥ 0, fix H_i = 0
-
-  2. Solving the resulting "branch NLP" (BNLP) — a standard NLP with
-     equality/inequality constraints but NO complementarity products.
-     Under MPEC-MFCQ, MFCQ holds for every BNLP, so IPOPT converges
-     reliably.
-
-  3. Checking whether the BNLP solution improves the objective value
-     and satisfies complementarity (it does by construction).
-
-This mirrors MPECopt's Phase II BNLP solves (Nurkanović & Leyffer, 2025)
-but in a simpler single-shot setting.
-
-Benefits:
-  - Removes complementarity degeneracy → IPOPT converges better
-  - Can tighten the solution from "nearly B-stat" to "exactly B-stat"
-  - Provides an exact complementarity-feasible point (G_i·H_i = 0)
-  - Uses open-source IPOPT linear solvers (default: MUMPS)
-
-Reference:
-  Nurkanović, A. & Leyffer, S. (2025). A Globally Convergent Method for
-  Computing B-stationary Points of MPECs. arXiv:2501.13835, Section 3.4.
+Polishing is the final step to "de-fuzz" the answer. We:
+1. Identify the "Active Set" (figuring out which rules are most important).
+2. Create a simpler version of the problem without any "fuzzy" smoothing.
+3. Solve this simple problem to get an exact, peak-quality answer.
 """
 
 import logging
@@ -79,19 +59,11 @@ _FINAL_POLISH_OPTS = {
 
 def identify_active_set(z, problem, tol=_ACTIVE_TOL):
     """
-    Identify the complementarity active-set partition at point z.
+    Step 1: "Parting the Sea" (Active Set Identification).
 
-    For standard NCP (two-partition):
-      I1 : G_i ≈ 0  → fix G_i = 0, H_i ≥ 0
-      I2 : H_i ≈ 0  → G_i ≥ 0, fix H_i = 0
-
-    For box-MCP (three-partition, gnash*m family):
-      I1 : G_i ≈ 0              → fix G_i = 0, H_i ≥ 0           (interior)
-      I2 : H_i ≈ 0              → G_i ≥ 0, fix H_i = 0           (lower-bound active)
-      I3 : H_i ≈ ubH_i         → G_i ≤ 0, fix H_i = ubH_i       (upper-bound active)
-
-    Returns (I1, I2, I_biactive, I3) for callers that support box-MCP,
-    or (I1, I2, I_biactive) for legacy callers (I3 rolled into I1).
+    We look at each pair of complementarity constraints (G and H) 
+    and decide which one is "at the limit" (zero). This allows us 
+    to simplify the math in the next step.
     """
     G, H = evaluate_GH(z, problem)
     n_comp = problem['n_comp']
@@ -135,23 +107,11 @@ def identify_active_set(z, problem, tol=_ACTIVE_TOL):
 
 def _build_bnlp(z_star, problem, I1, I2, I3=None, solver_opts=None, f_cut=None, use_ultra_tight=False):
     """
-    Build a Branch NLP with fixed complementarity active set.
+    Step 2: "Simplifying the Problem" (Building the BNLP).
 
-    BNLP(I1, I2, I3):
-        min  f(x)
-        s.t. c_lb ≤ c(x) ≤ c_ub        (original constraints)
-             x_lb ≤ x ≤ x_ub            (variable bounds)
-             G_i(x) = 0, H_i(x) ≥ 0    for i ∈ I1  (interior active)
-             G_i(x) ≥ 0, H_i(x) = 0    for i ∈ I2  (lower-bound active)
-             G_i(x) ≤ 0, H_i(x) = ubH  for i ∈ I3  (upper-bound active, box-MCP)
-             f(x) ≤ f_cut               (optional objective cut)
-
-    NO complementarity product constraint (G·H ≤ t) — the NLP is regular
-    under MPEC-MFCQ for all three active-set types.
-
-    Returns
-    -------
-    result : dict with keys: 'z_polish', 'f_val', 'status', 'success', 'cpu_time'
+    Based on our "Parting of the Sea," we build a standard 
+    optimization problem that is much easier for computers 
+    to solve accurately.
     """
     if I3 is None:
         I3 = []
@@ -297,7 +257,7 @@ def bnlp_polish(results, problem, solver_opts=None):
         'I_biactive': I_biactive,
         'bnlp_status': bnlp_result['status'],
         'bnlp_success': bnlp_result['success'],
-        'bnlp_f_val': bnlp_result['f_val'],
+        'f_val': bnlp_result['f_val'],
         'bnlp_cpu_time': bnlp_result['cpu_time'],
         'original_f_val': f_star,
         'improvement': 0,
@@ -311,22 +271,38 @@ def bnlp_polish(results, problem, solver_opts=None):
         
         polish_details['comp_res_polish'] = comp_res_polish
         polish_details['improvement'] = f_star - f_polish
+
+        # Fix B5: Use configured eps_tol (1e-7) instead of current comp_res as tolerance
+        # The original code incorrectly used the problem's comp_res as the tolerance threshold
+        _cfg_eps_tol = 1e-7  # Standard complementarity tolerance (middle ground: 1e-6 vs 1e-8)
+        comp_ok = comp_res_polish < max(1e-06, 10 * _cfg_eps_tol)
         
-        eps_tol = results.get('comp_res', 1e-06)
-        comp_ok = comp_res_polish < max(1e-06, 10 * eps_tol)
-        
-        if comp_ok:
+        # Accept BNLP only if BOTH complementarity is good AND objective is not worse.
+        # Without the objective check, BNLP can replace Phase II's good solution with
+        # a complementarity-feasible point that has a much worse objective (e.g. dempe).
+        _f_tolerance = max(abs(f_star) * 1e-4, 1e-8)  # 0.01% relative + 1e-8 absolute
+        obj_ok = f_polish <= f_star + _f_tolerance
+
+        if comp_ok and obj_ok:
             polish_details['accepted'] = True
             results['z_final'] = z_polish
             results['f_final'] = f_polish
             results['comp_res'] = comp_res_polish
-            if results['stationarity'] in ('FAIL', 'C', 'M'):
+            if results['stationarity'] in ('FAIL', 'C', 'M') and results.get('b_stationarity') is not False:
+                # Only upgrade to 'S' if LPEC hasn't explicitly proven NOT B-stationary.
+                # If b_stationarity=False, the LPEC found descent and S subset B is violated;
+                # upgrading to 'S' would be theoretically incorrect.
                 results['stationarity'] = 'S'
                 results['sign_test_pass'] = True
                 results['status'] = 'converged'
             logger.info(f'BNLP polish accepted: f={f_polish:.6e} (was {f_star:.6e}), comp_res={comp_res_polish:.2e}')
         else:
-            logger.info(f'BNLP polish rejected: comp_res={comp_res_polish:.2e}')
+            _reason = []
+            if not comp_ok:
+                _reason.append(f'comp_res={comp_res_polish:.2e} too high')
+            if not obj_ok:
+                _reason.append(f'f_polish={f_polish:.6e} > f_star={f_star:.6e}')
+            logger.info(f'BNLP polish rejected: {", ".join(_reason)}')
     else:
         logger.info(f"BNLP polish failed: {bnlp_result['status']}")
     
@@ -422,7 +398,7 @@ def _try_alternative_partitions(results, problem, z_star, f_star, I1_base, I2_ba
         results['bnlp_polish']['accepted'] = True
         results['bnlp_polish']['alt_partition_used'] = True
         results['bnlp_polish']['n_partitions_tried'] = n_tried
-        if results['stationarity'] in ('FAIL', 'C', 'M'):
+        if results['stationarity'] in ('FAIL', 'C', 'M') and results.get('b_stationarity') is not False:
             results['stationarity'] = 'S'
             results['sign_test_pass'] = True
             results['status'] = 'converged'

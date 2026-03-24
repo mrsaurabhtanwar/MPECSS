@@ -1,3 +1,12 @@
+"""
+The "Marathon Runner": Managing large-scale tests.
+
+When we want to test the solver on hundreds of problems at once, 
+this module takes charge. It organizes the "marathon," keeps 
+track of the score (results), and makes sure every problem 
+gets its turn without crashing the system.
+"""
+
 import os
 import gc
 import time
@@ -57,7 +66,7 @@ OFFICIAL_COLUMNS = [
     "total_nlp_iters", "tracking_count_final", "stagnation_count_final", "last_feasible_t",
     "infeasibility_hits", "max_consecutive_fails_reached",
     "regime_superlinear_count", "regime_fast_count", "regime_slow_count", "regime_adaptive_jump_count",
-    "regime_post_stagnation_count", "regime_linf_count", "regime_linf_fallback_count",
+    "regime_post_stagnation_count",
     "restoration_random_perturb_count", "restoration_directional_escape_count",
     "restoration_quadratic_reg_count", "restoration_qr_failed_count",
     "solver_ipopt_iters"
@@ -193,7 +202,15 @@ def run_single_problem_internal(
         # to guarantee the solver pushes the point across the boundary.
         "solver_opts": {"max_iter": 5000, "tol": 1e-9},
         "feasibility_phase": True,
+        # Recovery guards: prevent infinite cycling on hard problems
+        "max_restorations": 50,
+        "restoration_stag_window": 8,
     }
+    if wall_timeout is not None:
+        # Reserve 80% of the wall timeout for Phase I+II (run_mpecss measures its
+        # own clock from its own total_start, so Phase I is inside that budget).
+        # The remaining 20% covers Phase III: BNLP polish, LPEC refine, B-stat.
+        params["wall_timeout"] = wall_timeout * 0.80
 
     # NOTE: Signal-based timeout (SIGALRM) removed. It was unreliable:
     # 1. SIGALRM doesn't exist on Windows
@@ -325,9 +342,7 @@ def run_single_problem_internal(
         row["regime_fast_count"]               = regimes.count("fast")
         row["regime_slow_count"]               = regimes.count("slow")
         row["regime_adaptive_jump_count"]      = regimes.count("adaptive_jump")
-        row["regime_post_stagnation_count"]    = regimes.count("post_stagnation")
-        row["regime_linf_count"]               = regimes.count("linf")
-        row["regime_linf_fallback_count"]      = regimes.count("linf_fallback")
+        row["regime_post_stagnation_count"]    = regimes.count("post_stagnation_fast")
         row["total_nlp_iters"]                 = sum(l.nlp_iter_count for l in logs)
         row["final_t_k"]                       = logs[-1].t_k
         row["n_biactive_final"]                = logs[-1].n_biactive
@@ -447,19 +462,31 @@ def run_benchmark_main(loader_fn: Callable[[str], Dict[str, Any]], dataset_tag: 
     parser.add_argument("--tag",          type=str,   default="Official")
     parser.add_argument("--problem",      type=str,   help="Problem name or substring filter")
     parser.add_argument("--seed",         type=int,   default=42)
-    parser.add_argument("--workers",      type=int,   default=1,
-                        help="Number of parallel workers. Each worker runs one problem at a time (default: 1).")
+    parser.add_argument("--workers",      type=int,   default=2,
+                        help="Number of parallel workers. Each worker runs one problem at a time (default: 2). "
+                             "Recommended: 2 for 7-8GB RAM systems. Use 1 if experiencing OOM errors.")
     parser.add_argument("--timeout",      type=float, default=3600.0,
                         help="Per-problem wall-clock timeout in seconds (default: 3600). "
                              "Set 0 to disable.")
     parser.add_argument("--mem-limit-gb", type=float, default=None,
-                        help="Soft per-worker RAM cap in GB (Linux/WSL only).")
+                        help="Soft per-worker RAM cap in GB (Linux/WSL only). "
+                             "Has NO effect on Windows native — omit it there. "
+                             "When omitted (default), every problem is free to use "
+                             "as much memory as the OS will allocate; each problem "
+                             "runs in its own isolated process so one OOM-killed "
+                             "problem cannot affect any other worker. "
+                             "Example: --mem-limit-gb 4.0")
     parser.add_argument("--save-logs",    action="store_true", help="Save detailed per-iteration CSV logs")
     parser.add_argument("--sort-by-size", action="store_true", help="Sort problems by file size (small -> large)")
-    parser.add_argument("--shuffle",      action="store_true", help="Shuffle problems randomly to distribute RAM load evenly")
+    parser.add_argument("--shuffle",      action="store_true", default=True, 
+                        help="Shuffle problems randomly to distribute RAM load evenly (default: True, use --no-shuffle to disable)")
+    parser.add_argument("--no-shuffle",   dest="shuffle", action="store_false", 
+                        help="Disable shuffling (process problems alphabetically)")
     parser.add_argument("--path",         type=str,   default=default_path,
 
                         help="Path to benchmark JSON directory")
+    parser.add_argument("--num-problems", type=int,   default=None,
+                        help="Limit to first N problems (useful for quick official test runs, e.g., --num-problems 10)")
     parser.add_argument("--resume",       type=str,   help="Path to existing CSV results to resume from")
     parser.add_argument("--retry-failed", action="store_true", help="When resuming, ignore past OOM/timeout/crash results and re-run them")
     args = parser.parse_args()
@@ -527,7 +554,16 @@ def run_benchmark_main(loader_fn: Callable[[str], Dict[str, Any]], dataset_tag: 
     if args.problem:
         problem_files = [f for f in problem_files if args.problem in f]
 
-    timestamp   = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Apply problem limit if specified
+    if args.num_problems is not None and args.num_problems > 0:
+        original_count = len(problem_files)
+        problem_files = problem_files[:args.num_problems]
+        logger.info(f"Limiting to {args.num_problems} problems (reduced from {original_count})")
+
+    # Generate timestamp for this benchmark run
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
     summary_path = os.path.join(results_dir, f"{dataset_tag}_full_{args.tag}_{timestamp}.csv")
     if args.resume:
         # Use a name that indicates it's a continuation
@@ -537,8 +573,15 @@ def run_benchmark_main(loader_fn: Callable[[str], Dict[str, Any]], dataset_tag: 
         vm = psutil.virtual_memory()
         avail_gb = vm.available / 1024**3
         total_gb = vm.total / 1024**3
+        cap_note = (
+            f"per-worker cap: {args.mem_limit_gb:.1f} GB (Linux/WSL only)"
+            if getattr(args, "mem_limit_gb", None)
+            else "no per-problem cap — each problem may use all available memory"
+        )
         logger.info(
-            f"System memory: {avail_gb:.1f} GB available / {total_gb:.1f} GB total"
+            f"System memory: {avail_gb:.1f} GB currently free / {total_gb:.1f} GB total "
+            f"({cap_note}). Each problem runs in an isolated process — "
+            f"one failure cannot affect other workers."
         )
 
     logger.info(
@@ -654,13 +697,12 @@ def _write_run_env(results_dir: str, timestamp: str, dataset_tag: str, args) -> 
 def _worker_process(problem_file, loader_fn, args_path, seed, tag, results_dir,
                     save_logs, dataset_tag, timeout, mem_limit_gb, result_queue):
     """
-    Worker function that runs in an isolated spawned process.
+    The "Solo Runner": Executing one specific problem.
 
-    Catches BaseException (including MemoryError and CasADi std::bad_alloc)
-    so that even Python-level OOMs produce a structured result row rather
-    than silently dying.  No memory cap is imposed: the OS manages memory
-    freely across all workers, and the monitor loop in the parent detects
-    any hard kernel OOM-kill via exit code and records it as status=oom.
+    Each problem runs in its own "bubble" (isolated process). This 
+    way, if one problem crashes or uses too much memory, it 
+    doesn't stop the rest of the marathon. We also set strict 
+    memory limits here to keep the system stable.
     """
     # Set thread environment variables BEFORE any imports that might use them.
     # This ensures CasADi/NumPy/OpenBLAS don't spawn extra threads.
@@ -668,6 +710,25 @@ def _worker_process(problem_file, loader_fn, args_path, seed, tag, results_dir,
     os.environ["MKL_NUM_THREADS"] = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+    # ── Apply per-worker memory cap (Linux/WSL only) ───────────────────────
+    if mem_limit_gb and mem_limit_gb > 0:
+        try:
+            import resource
+            limit_bytes = int(mem_limit_gb * 1024 ** 3)
+            # RLIMIT_AS caps total virtual address space.
+            # Use soft = hard = limit so the cap is immediate and cannot be
+            # raised by child code.  A 512 MB headroom is added on top of the
+            # user-specified cap to allow Python/CasADi overhead before IPOPT
+            # starts allocating its working memory.
+            headroom = int(0.512 * 1024 ** 3)
+            cap = limit_bytes + headroom
+            resource.setrlimit(resource.RLIMIT_AS, (cap, cap))
+        except (ImportError, ValueError, resource.error):
+            # ImportError  -> Windows (resource module absent) — skip silently
+            # ValueError   -> cap < current usage (already over limit) — skip
+            # resource.error -> permission denied or unsupported — skip
+            pass
     
     # ── Run solver ────────────────────────────────────────────────────────
     res = None
@@ -720,15 +781,13 @@ def _worker_process(problem_file, loader_fn, args_path, seed, tag, results_dir,
 
 def _run_parallel_isolated(problem_files, loader_fn, args, results_dir, dataset_tag, summary_path):
     """
-    Run problems in parallel using isolated Process objects and a sliding window.
+    The "Race Coordinator": Managing multiple runners at once.
 
-    Each problem gets its own fresh process so that an OOM-kill or crash
-    of one worker cannot corrupt or block the collection of results from
-    the other workers. The collection loop polls the queue frequently and
-    monitors each child's wall-clock time individually, enforcing timeouts.
-
-    Results are checkpointed to the CSV after every single problem
-    completes, so progress is never lost even if a later problem hangs.
+    This is the brains of the parallel operation. It starts 
+    multiple "Solo Runners" (up to the number of workers requested), 
+    watches them as they run, and writes down their scores (results) 
+    as soon as they finish. If a runner takes too long, 
+    the coordinator steps in to stop them.
     """
     mp_context = multiprocessing.get_context('spawn')
     manager = mp_context.Manager()
@@ -781,6 +840,34 @@ def _run_parallel_isolated(problem_files, loader_fn, args, results_dir, dataset_
                 all_results.append(res)
                 _save_csv(all_results, summary_path)
             except _queue_module.Empty:
+                break
+            except KeyboardInterrupt:
+                # Ctrl+C while blocking on the queue proxy — initiate graceful shutdown.
+                # Clear remaining and active_procs so the outer while-loop exits cleanly.
+                logger.warning(
+                    "\nKeyboardInterrupt received — terminating workers and "
+                    "saving partial results..."
+                )
+                for _f, (_p, _) in list(active_procs.items()):
+                    try:
+                        _p.terminate()
+                        _p.join(timeout=5)
+                        if _p.is_alive():
+                            _p.kill()
+                            _p.join(timeout=2)
+                    except Exception:
+                        pass
+                    all_results.append({
+                        "problem_file": _f,
+                        "status": "interrupted",
+                        "error_msg": "Cancelled by KeyboardInterrupt",
+                    })
+                active_procs.clear()
+                remaining.clear()
+                _save_csv(all_results, summary_path)
+                logger.info(
+                    f"Partial results saved: {len(all_results)} problems → {summary_path}"
+                )
                 break
             except Exception as exc:
                 logger.debug(f"Queue read error: {exc}")

@@ -1,37 +1,16 @@
 """
-B-Stationarity certification for MPECSS via LPEC.
+B-Stationarity: The "Clinical Proof" for MPEC solutions.
 
-Under MPEC-LICQ, S-stationarity ⟺ B-stationarity (Scheel & Scholtes, 2000).
-This module provides:
-    1. An LPEC-based post-solve verification that certifies B-stationarity
-       directly (even when MPEC-LICQ is unclear).
-    2. An MPEC-LICQ check to confirm the equivalence holds.
+Getting a solution that looks good is one thing; proving it is 
+mathematically solid is another. This module provides the tools 
+to perform that proof.
 
-The LPEC (Linear Program with Equilibrium Constraints) solved is:
+We use a technique called "LPEC Enumeration." It's like checking 
+every possible small move we could make from our current spot to 
+see if any of them lead to a better (lower) score. If NO such 
+move exists, we have reached a "B-stationary" point.
 
-    min_d   ∇f(x*)ᵀ d
-    s.t.    ∇c_j(x*)ᵀ d ≤ 0    for active inequality constraints j
-            ∇c_j(x*)ᵀ d = 0    for equality constraints j
-            x_lb ≤ x* + d ≤ x_ub  (linearized bound feasibility)
-            d_G[i] ≥ 0, d_H[i] ≥ 0   for biactive i
-            d_G[i] free             for i ∈ I_G (G active only)
-            d_H[i] free             for i ∈ I_H (H active only)
-
-    where d_G = ∇G(x*)ᵀ d,  d_H = ∇H(x*)ᵀ d
-
-If the optimal value ≥ -ε (for small ε), the point is B-stationary:
-no complementarity-feasible descent direction exists.
-
-Implementation uses SciPy's linprog (open-source, no Gurobi needed).
-
-References:
-    - Scheel, H. & Scholtes, S. (2000). Mathematical Programs with
-      Complementarity Constraints: Stationarity, Optimality, and Sensitivity.
-      Mathematics of Operations Research, 25(1), 1-22.
-    - Ralph, D. & Wright, S.J. (2004). Some properties of regularization
-      and penalization schemes for MPECs.
-    - Nurkanović, A. & Leyffer, S. (2025). A Globally Convergent Method for
-      Computing B-stationary Points of MPECs. arXiv preprint.
+Think of it as the "Final Exam" for the solver's answer.
 """
 
 import logging
@@ -154,13 +133,11 @@ def _classify_complementarity_indices(z, problem, tol=_ACTIVE_TOL):
 
 def check_mpec_licq(z, problem, tol=_LICQ_TOL):
     """
-    Check MPEC-LICQ at point z.
+    Step 1: The "Shortcut" (LICQ Check).
 
-    MPEC-LICQ holds if the gradients of all active constraints
-    (including separate ∇G_i and ∇H_i for biactive indices i ∈ I_B)
-    are linearly independent.
-
-    Under MPEC-LICQ: B-stationarity ⟺ S-stationarity.
+    If the problem is "well-behaved" (MPEC-LICQ holds), then we can 
+    prove B-stationarity very easily using the "Sign Test." 
+    This function checks if we are allowed to take that shortcut.
 
     Parameters
     ----------
@@ -230,9 +207,11 @@ def check_mpec_licq(z, problem, tol=_LICQ_TOL):
 
 def certify_bstationarity(z, problem, f_val=None, tol=_BSTAT_TOL, dir_bound=None, timeout=None):
     """
-    Certify B-stationarity at point z by solving an LPEC.
+    Step 2: The "Full Exam" (LPEC Enumeration).
 
-    Uses SciPy linprog (fully open-source, no Gurobi needed).
+    If the shortcut doesn't work, we have to do it the hard way. 
+    We literally check every possible combination of directions 
+    to see if there's any hidden "downhill" path we missed.
 
     Parameters
     ----------
@@ -260,16 +239,23 @@ def certify_bstationarity(z, problem, f_val=None, tol=_BSTAT_TOL, dir_bound=None
     details : dict
         Diagnostic information.
     """
-    from mpecss.helpers.loaders.macmpec_loader import evaluate_GH
-    
+    from mpecss.helpers.loaders.macmpec_loader import evaluate_GH, complementarity_residual
+
     if dir_bound is None:
         dir_bound = _DIR_BOUND
     if timeout is None:
         timeout = _BSTAT_TIMEOUT
-    
+
     n_x = problem['n_x']
     z = np.asarray(z).flatten()
-    
+
+    # Fix B2: Check complementarity feasibility before certifying B-stationarity
+    # B-stationarity is only meaningful at complementarity-feasible points
+    current_comp_res = float(complementarity_residual(z, problem))
+    if current_comp_res > tol * 100:
+        logger.warning(f"B-stat certification skipped: comp_res={current_comp_res:.2e} >> tol={tol:.2e}")
+        return False, float('inf'), False, {'lpec_status': 'infeasible_skip', 'comp_res': current_comp_res}
+
     # Compute Jacobians
     grad_f, J_g, J_G, J_H = _compute_jacobians(z, problem)
     I_G, I_H, I_B, I_free = _classify_complementarity_indices(z, problem)
@@ -386,12 +372,13 @@ def certify_bstationarity(z, problem, f_val=None, tol=_BSTAT_TOL, dir_bound=None
     return is_bstat, best_obj, licq_holds, details
 
 
-def bstat_post_check(result, problem, timeout=None):
+def bstat_post_check(result, problem, timeout=None, eps_tol=1e-7):
     """
     Convenience wrapper: run B-stationarity check on MPECSS result.
 
-    Only runs the check if the solver converged (status='converged'
-    and stationarity='S').
+    Runs the check if:
+    - status='converged' and stationarity='S' (original behavior), OR
+    - status='solver_fail' but comp_res is good (within 10x eps_tol) -- Fix 2
 
     Parameters
     ----------
@@ -401,6 +388,8 @@ def bstat_post_check(result, problem, timeout=None):
         Problem specification.
     timeout : float or None
         Wall-clock timeout in seconds for the LPEC enumeration.
+    eps_tol : float
+        Complementarity tolerance (default 1e-7).
 
     Returns
     -------
@@ -411,15 +400,32 @@ def bstat_post_check(result, problem, timeout=None):
         - 'licq_holds': bool or None
         - 'bstat_details': dict or None
         - 'stationarity': upgraded to 'B' if B-stat certified
+        - 'status': upgraded to 'converged' if B-stat certified
     """
     result = dict(result)
-    
-    if result.get('status') != 'converged' or result.get('stationarity') != 'S':
-        result['b_stationarity'] = None
-        result['lpec_obj'] = None
-        result['licq_holds'] = None
-        result['bstat_details'] = None
-        logger.info(f"Skipping B-stat check: status={result.get('status')}, stationarity={result.get('stationarity')}")
+
+    status = result.get('status')
+    stationarity = result.get('stationarity')
+    comp_res = result.get('comp_res', float('inf'))
+
+    # Fix 2: Also attempt B-stat check for solver_fail with good comp_res
+    should_check = (
+        (status == 'converged' and stationarity in ('S', 'C')) or
+        (status == 'solver_fail' and comp_res <= eps_tol * 10)  # Within 10x tolerance
+    )
+
+    if not should_check:
+        # Fix B3: Only set fields to None if they were not already populated by run_mpecss Phase III
+        # This preserves bstat_details from the main algorithm for B-stationary problems
+        if result.get('b_stationarity') is None:
+            result['b_stationarity'] = None
+        if result.get('lpec_obj') is None:
+            result['lpec_obj'] = None
+        if result.get('licq_holds') is None:
+            result['licq_holds'] = None
+        if not result.get('bstat_details'):
+            result['bstat_details'] = None
+        logger.info(f"Skipping B-stat check: status={status}, stationarity={stationarity}, comp_res={comp_res:.3e}")
         return result
     
     z = result['z_final']
@@ -434,6 +440,7 @@ def bstat_post_check(result, problem, timeout=None):
         
         if is_bstat:
             result['stationarity'] = 'B'
+            result['status'] = 'converged'  # Fix 1: Override status when B-stat certified
             logger.info('Stationarity upgraded: S → B (LPEC certified)')
     except Exception as e:
         logger.warning(f'B-stat check failed: {e}')

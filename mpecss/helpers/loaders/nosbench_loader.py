@@ -1,5 +1,9 @@
 """
-NOSBENCH loader compatible with MPECSS problem format.
+The "Problem Translator" (NOSBENCH): Turning NOSBench into math.
+
+NOSBench is a set of nonlinear optimization problems. 
+This module translates these specific files so the 
+MPECSS solver can work its magic on them.
 """
 
 from __future__ import annotations
@@ -68,12 +72,25 @@ def load_nosbench(filepath: str) -> Dict[str, Any]:
     if f_fn is None or G_fn is None or H_fn is None:
         raise ValueError(f"Invalid NOSBENCH JSON (missing serialized functions): {filepath}")
 
-    lbg = _sanitize_bounds(data.get("lbg", []), -_BIG)
-    ubg = _sanitize_bounds(data.get("ubg", []), _BIG)
-    lbG = _sanitize_bounds(data.get("lbG", [0.0]), 0.0)
-    lbH = _sanitize_bounds(data.get("lbH", [0.0]), 0.0)
-    n_comp = len(lbG)
-    n_con = len(lbg)
+    # Derive n_comp from G_fn output dimension, NOT from lbG array length.
+    # NOSBench JSONs often have empty lbG/lbH arrays but valid G_fn/H_fn functions.
+    n_comp = G_fn.size_out(0)[0]
+
+    # Derive n_con from g_fn output dimension if it exists.
+    n_con = g_fn.size_out(0)[0] if g_fn is not None else 0
+
+    raw_lbg = data.get("lbg", [])
+    raw_ubg = data.get("ubg", [])
+    
+    # Defaults for general constraints g(x) <= 0: lbg=-inf, ubg=0
+    lbg = _sanitize_bounds(raw_lbg, -_BIG) if raw_lbg else [-_BIG] * n_con
+    ubg = _sanitize_bounds(raw_ubg, 0.0) if raw_ubg else [0.0] * n_con
+    
+    # Default lbG/lbH to zeros of correct length if not provided or empty
+    raw_lbG = data.get("lbG", [])
+    raw_lbH = data.get("lbH", [])
+    lbG = _sanitize_bounds(raw_lbG, 0.0) if raw_lbG else [0.0] * n_comp
+    lbH = _sanitize_bounds(raw_lbH, 0.0) if raw_lbH else [0.0] * n_comp
 
     def _call(fun, x):
         if fun.n_in() >= 2:
@@ -102,9 +119,12 @@ def load_nosbench(filepath: str) -> Dict[str, Any]:
             ubg_parts.extend(ubg)
 
         g_parts.append(G + delta_k)
+        lbg_parts.extend([0.0] * n_comp)
+        ubg_parts.extend([_BIG] * n_comp)
+        
         g_parts.append(H + delta_k)
-        lbg_parts.extend([0.0] * n_comp + [0.0] * n_comp)
-        ubg_parts.extend([_BIG] * n_comp + [_BIG] * n_comp)
+        lbg_parts.extend([0.0] * n_comp)
+        ubg_parts.extend([_BIG] * n_comp)
 
         if smoothing == "fb":
             comp = ca.sqrt(G**2 + H**2) - G - H - t_k

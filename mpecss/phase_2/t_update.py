@@ -1,8 +1,14 @@
 """
-Adaptive smoothing-parameter update policy for Phase II.
+The Adaptive Accelerator: Deciding how fast to "Sharpen" the problem.
 
-This module centralizes the four-track t-update logic so `mpecss.py` remains
-an orchestrator.
+In Phase II, we use a smoothing parameter 't'. As 't' gets smaller, 
+the problem gets sharper and more accurate. 
+
+This module is like the "Automatic Transmission" of the solver. It decides 
+whether to:
+1. Speed up (decrease 't' quickly) if things are going well.
+2. Slow down if the solver is struggling.
+3. "Jump" to a different setting if we get stuck (stagnation).
 """
 
 from typing import Any, Dict, List, Tuple
@@ -28,17 +34,9 @@ def compute_next_t(p, t_k, kappa, comp_res, prev_comp_res, stagnation_count, tra
     denom = max(prev_comp_res, np.finfo(float).tiny)
     improvement = (prev_comp_res - comp_res) / denom
     
-    # Get steering mode
-    steering = p.get('steering', 'adaptive')
-    
-    # Handle non-adaptive modes
-    if steering == 'linf':
-        regime = 'linf'
-        t_new = kappa * t_k
-        return t_new, stagnation_count, tracking_count, regime
-    
+    # Safety: NaN fallback uses conservative slow regime
     if np.isnan(comp_res) or np.isnan(prev_comp_res):
-        regime = 'linf_fallback'
+        regime = 'slow'
         t_new = kappa * t_k
         return t_new, stagnation_count, tracking_count, regime
     
@@ -69,22 +67,24 @@ def compute_next_t(p, t_k, kappa, comp_res, prev_comp_res, stagnation_count, tra
         else:
             tracking_count = max(0, tracking_count - 1)
     
-    # Determine update regime
+    # ══════════════════════════════════════════════════════════════════════════
+    # THE FIVE GEARS OF THE SOLVER (REGIMES)
+    # ══════════════════════════════════════════════════════════════════════════
     if tracking and improvement > 0.5:
-        regime = 'superlinear'
+        regime = 'superlinear'  # Top Gear: Extreme speed.
         t_new = kappa * kappa * t_k
     elif tracking and improvement > 0.1:
-        regime = 'fast'
+        regime = 'fast'         # 4th Gear: Good progress.
         t_new = min(kappa, 0.5) * t_k
     elif stagnation_count >= 4:
-        regime = 'adaptive_jump'
-        t_new = 2 * kappa * t_k  # larger step to escape stagnation
+        regime = 'adaptive_jump' # Recovery Gear: We're stuck, try a big change.
+        t_new = kappa * kappa * t_k
         stagnation_count = 0
     elif stagnation_count >= 2:
-        regime = 'post_stagnation_fast'
+        regime = 'post_stagnation_fast' # 2nd Gear: Recovering from a stuck spot.
         t_new = min(kappa, 0.5) * t_k
     else:
-        regime = 'slow'
+        regime = 'slow'         # 1st Gear: Careful, steady progress.
         t_new = kappa * t_k
     
     return t_new, stagnation_count, tracking_count, regime

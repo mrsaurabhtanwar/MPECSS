@@ -1,71 +1,76 @@
-# Quick Start
+# MPECSS Quick Start Guide
 
-Get MPECSS running in 5 minutes.
+Get up and running with MPECSS in less than 5 minutes.
 
-## 1. Install
+## 1. Fast Setup (1 minute)
 
-```bash
-pip install casadi numpy
-pip install -e .
-```
-
-## 2. Verify Installation
+The easiest way to use MPECSS is via `pip`. Open your terminal and run:
 
 ```bash
-python -c "from mpecss import run_mpecss; print('OK')"
+# Create a folder for your work
+mkdir my-mpec-work && cd my-mpec-work
+
+# Create a virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# Install MPECSS
+pip install mpecss
 ```
 
-## 3. Run Your First Solve
+## 2. Preflight Check (30 seconds)
+
+Make sure your computer has everything it needs to run the math:
+
+```bash
+mpecss-preflight
+```
+
+This will check your Python version, memory, and solver availability.
+
+## 3. Solve Your First Problem (1 minute)
+
+Create a file named `solve_one.py` and paste this code:
 
 ```python
-from mpecss import run_mpecss
 from mpecss.helpers.loaders.macmpec_loader import load_macmpec
+from mpecss.phase_2.mpecss import run_mpecss
 
-# Load a benchmark problem
-problem = load_macmpec("benchmarks/macmpec/macmpec-json/bard1.nl.json")
+# 1. Load a benchmark problem
+# (Assumes you have extracted benchmarks.zip in your folder)
+problem = load_macmpec("benchmarks/macmpec/macmpec-json/dempe.nl.json")
 
-# Generate initial point
-z0 = problem["x0_fn"](seed=0)
+# 2. Start the solver
+result = run_mpecss(problem)
 
-# Solve
-result = run_mpecss(problem, z0)
-
+# 3. View the result
 print(f"Status: {result['status']}")
-print(f"Objective: {result['f_final']:.6f}")
+print(f"Objective Value: {result['f_final']:.4f}")
 ```
 
-Expected output:
-```
-Status: converged
-Objective: 17.000000
-```
+## 4. Run Benchmarks (2 minutes)
 
-## 4. Run Tests
+If you have extracted the `benchmarks.zip` data, you can run hundreds of tests with a single command:
 
 ```bash
-pytest tests/ -v
+# Run 191 MacMPEC problems using 4 cores
+mpecss-macmpec --workers 4
 ```
 
-## 5. Next Steps
+Check your results in the `results/` folder!
 
-- See `examples/` for more usage patterns
-- Read the main [README.md](README.md) for algorithm details
-- Check `mpecss/phase_2/mpecss.py` for solver parameters
+## 5. What do the results mean?
+
+When the solver finishes, it will give you one of these statuses:
+
+- **S-stationary** ✅: Found the "Gold Standard" solution.
+- **B-stationary** ✅: Found a mathematically solid solution.
+- **Failed** ❌: The problem was extremely difficult; try a different starting point.
 
 ## Troubleshooting
 
-**ImportError: No module named 'casadi'**
-```bash
-pip install casadi
-```
+- **`CasADi not found`**: Ensure your virtual environment is active.
+- **`Memory Error`**: If your computer slows down, run benchmarks with fewer workers (e.g., `--workers 1`).
 
-**FileNotFoundError: Benchmark file not found**
-```bash
-# Run from the repository root directory
-cd /path/to/MPECSS
-python examples/solve_simple.py
-```
-
-**Solver returns status='max_iter'**
-- Try increasing `max_outer` parameter
-- Or use a different initial point with `seed=1, 2, ...`
+---
+For more details, see the [Full README](README.md).

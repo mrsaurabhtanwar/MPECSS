@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mpecss"
-version = "1.0.2"
+version = "1.0.3"
 authors = [
   { name="Saurabh", email="27098@arsd.du.ac.in" },
   { name="Kunwar Vijay Kumar Singh", email="24091973@scale.iitrpr.ac.in" },
@@ -44,6 +44,7 @@ Changelog = "https://github.com/mrsaurabhtanwar/MPECSS/blob/main/CHANGELOG.md"
 test = ["pytest>=7.4"]
 
 [project.scripts]
+mpecss-preflight = "scripts.preflight_checks:main"
 mpecss-macmpec = "scripts.run_macmpec_benchmark:main"
 mpecss-mpeclib = "scripts.run_mpeclib_benchmark:main"
 mpecss-nosbench = "scripts.run_nosbench_benchmark:main"

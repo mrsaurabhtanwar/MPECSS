@@ -1,32 +1,14 @@
-# Fully reconstructed from bytecode: lpec_refine.cpython-312.pyc
-# Original file: /mnt/d/MPECSS/mpecss/phase_3/lpec_refine.py
-
 """
-LPEC-guided refinement loop for MPECSS (simplified MPECopt Phase II).
+The "Final Polish": Making a good solution even better.
 
-BEGINNER NOTE — What is LPEC refinement?
-    After the main algorithm converges, we check if the solution is
-    "B-stationary" (the best possible). If NOT, the LPEC found a
-    direction we can move in to improve the objective while staying
-    complementarity-feasible. This module follows that direction
-    by solving a "branch NLP" and repeats until no further improvement
-    is possible. Think of it as iteratively polishing the solution.
+Sometimes, the main solver gets "close enough" but isn't quite 
+perfect. This module takes that solution and "polishes" it. 
+It looks for small ways to improve the result without breaking 
+any rules (complementarity).
 
-After MPECSS converges, if the B-stationarity check fails (LPEC finds
-a descent direction d != 0), this module iterates:
-
-  1. Solve LPEC(x*, rho) -> get direction d and active-set partition
-  2. If d = 0: B-stationary, done
-  3. If d != 0: extract active-set I1, I2 from x* + d
-  4. Solve BNLP(I1, I2) starting from x*
-  5. If f(x_new) < f(x*): accept x_new, go to 1
-  6. Else: reduce trust-region rho, go to 1
-
-Key simplifications vs. full MPECopt:
-  - Uses SciPy linprog for LPEC (no Gurobi/HiGHS MILP needed)
-  - Single active-set partition per iteration (no MILP branching)
-  - Trust-region on LPEC step, not on full NLP
-  - Open-source only (no commercial solvers required)
+It's like a clinical proof: we check if any better direction 
+exists, and if so, we follow it until we reach the absolute 
+best point possible (B-stationarity).
 """
 
 import logging
@@ -60,27 +42,11 @@ def lpec_refinement_loop(
     params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
-    Run LPEC-guided refinement to compute a B-stationary point.
+    The Precision Loop: Improving the solution step-by-step.
 
-    Starting from the MPECSS converged point, iterates:
-    LPEC -> active set -> BNLP -> improve objective -> repeat until B-stat.
-
-    Parameters
-    ----------
-    results : dict
-        MPECSS results dict (must have 'z_final', 'f_final').
-    problem : dict
-        Problem specification.
-    solver_opts : dict or None
-        IPOPT options for BNLP solves.
-    params : dict or None
-        LPEC refinement parameters (merged with _DEFAULT_PARAMS).
-
-    Returns
-    -------
-    results : dict
-        Updated results with refined solution.
-        Adds 'lpec_refine' key with refinement details.
+    We repeatedly check for a "better way down" (descent direction). 
+    If we find one, we take a small step, solve a simplified 
+    version of the problem (BNLP), and update our position.
     """
     # Merge parameters
     p = dict(_DEFAULT_PARAMS)
@@ -162,6 +128,7 @@ def lpec_refinement_loop(
                 results['comp_res']      = complementarity_residual(z_k, problem)
                 results['b_stationarity'] = True
                 results['stationarity']  = 'B'
+                results['status']        = 'converged'  # Fix 1: Override solver_fail when B-stat certified
                 results['lpec_obj']      = lpec_obj
                 results['licq_holds']    = licq_holds
                 results['bstat_details'] = details

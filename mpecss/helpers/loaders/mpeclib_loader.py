@@ -1,14 +1,9 @@
 """
-mpeclib_loader.py — MPECLib problem loader for MPECSS
-======================================================
-Loads .nl.json files produced by benchmarks/mpeclib/convert_mpeclib.py.
+The "Problem Translator" (MPECLib): Turning libraries into math.
 
-The on-disk JSON schema is identical to the MacMPEC format:
-  lbw, ubw, w0          — variable bounds and initial point
-  f_fun                 — serialized CasADi objective function
-  G_fun, H_fun          — serialized complementarity functions
-  lbG, ubG, lbH, ubH   — complementarity bounds
-  g_fun, lbg, ubg       — original constraints (if any)
+MPECLib is another big library of complementarity problems. 
+This module reads the specialized JSON files and prepares 
+them for the MPECSS solver.
 """
 import glob
 import json

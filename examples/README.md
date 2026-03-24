@@ -1,56 +1,45 @@
 # MPECSS Examples
 
-This directory contains example scripts demonstrating MPECSS usage patterns.
+This folder contains simple scripts to help you get started with the MPECSS solver.
 
-## Examples
+## Available Examples
 
 | File | Description |
-|------|-------------|
-| `solve_simple.py` | Minimal example: load and solve a single MacMPEC problem |
-| `custom_params.py` | How to customize solver parameters |
-| `batch_solve.py` | Solve multiple problems in a loop |
+| :--- | :--- |
+| **`solve_simple.py`** | The best place to start. Loads one problem and solves it. |
+| **`custom_params.py`** | Shows how to change solver settings like accuracy or speed. |
+| **`batch_solve.py`** | Demonstrates how to solve a list of problems in a single run. |
 
 ## Quick Start
 
+To run an example, open your terminal in the project root and type:
+
 ```bash
-# From the repository root:
 python examples/solve_simple.py
 ```
 
-## Requirements
+## Understanding the Solver Output
 
-- Python 3.10+
-- CasADi 3.6+
-- MPECSS installed (`pip install -e .`)
+When you run `run_mpecss(problem)`, it returns a dictionary with these important pieces of information:
 
-## Problem Loaders
+- **`z_final`**: The final answer (the values the solver found).
+- **`f_final`**: The final "score" or cost (smaller is usually better).
+- **`status`**: Tells you if it worked (`"converged"`) or failed (`"solver_fail"`).
+- **`stationarity`**: The quality of the solution (`"S"` for perfect, `"B"` for reliable, or `"FAIL"`).
+- **`cpu_time`**: How many seconds the solver took to find the answer.
 
-MPECSS provides loaders for three benchmark suites:
+## How to Load Your Own Problems
+
+MPECSS makes it easy to load problems from different researchers:
 
 ```python
 from mpecss.helpers.loaders.macmpec_loader import load_macmpec
 from mpecss.helpers.loaders.mpeclib_loader import load_mpeclib
 from mpecss.helpers.loaders.nosbench_loader import load_nosbench
 
-# Load a MacMPEC problem
+# Example: Load a MacMPEC problem
 problem = load_macmpec("benchmarks/macmpec/macmpec-json/bard1.nl.json")
-
-# Load an MPECLib problem
-problem = load_mpeclib("benchmarks/mpeclib-json/scholtes_ex1.json")
 ```
 
-## Result Structure
-
-The solver returns a dictionary with:
-
-```python
-result = {
-    "z_final":       np.ndarray,  # Solution vector
-    "f_final":       float,       # Objective value
-    "comp_res":      float,       # Complementarity residual
-    "status":        str,         # "converged", "max_iter", or "solver_fail"
-    "n_outer_iters": int,         # Number of homotopy iterations
-    "cpu_time":      float,       # Total solve time (seconds)
-    "logs":          list,        # Per-iteration logs
-}
-```
+---
+For more details on the math behind the solver, check the [Full README](../README.md).

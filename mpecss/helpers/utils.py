@@ -1,6 +1,11 @@
 """
-Utility functions for MPECSS: logging setup, KKT/complementarity metrics,
-multiplier extraction, and CSV export/import.
+The Toolbox: Helpful tools for logging and math.
+
+This module is like a "utility belt" for the solver. It contains:
+1. IterationLog: A "Flight Recorder" that tracks every move the solver makes.
+2. extract_multipliers: A tool to "harvest" the mathematical forces acting 
+   on our solution so we can check its quality.
+3. multiplier_sign_test: A "Quality Seal" check to see if we reached our goal.
 """
 
 import logging
@@ -11,28 +16,18 @@ import numpy as np
 import casadi as ca
 
 
-def setup_logger(name='mpecss', level=logging.INFO, logfile=None) -> logging.Logger:
-    """Configure and return a named logger, optionally mirroring to a file."""
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    
-    if not logger.handlers:
-        fmt = logging.Formatter('[%(asctime)s] %(levelname)s %(name)s: %(message)s', datefmt='%H:%M:%S')
-        ch = logging.StreamHandler()
-        ch.setFormatter(fmt)
-        logger.addHandler(ch)
-        
-        if logfile:
-            fh = logging.FileHandler(logfile)
-            fh.setFormatter(fmt)
-            logger.addHandler(fh)
-    
-    return logger
 
 
 @dataclass
 class IterationLog:
-    """Per-outer-iteration data container (one row per homotopy step)."""
+    """
+    The Flight Recorder.
+
+    Every time the solver takes a step, we record everything: 
+    where we are, how much progress we made, and whether we 
+    ran into any trouble. This is what you see in the .csv 
+    reports later!
+    """
     iteration: int = 0
     t_k: float = 0.0
     delta_k: float = 0.0
@@ -81,25 +76,12 @@ class IterationLog:
 
 def extract_multipliers(lam_g, n_comp, problem_info):
     """
-    Slice lam_g into (lambda_G, lambda_H, lambda_comp) using the constraint
-    layout produced by build_casadi.
+    Harvesting the Forces (Multipliers).
 
-    Standard NCP layout (n_ubH == 0):
-        [n_orig_con | n_bounded_G | n_comp (H>=0) | n_comp (comp)]
-
-    Box-MCP layout (n_ubH > 0, e.g. gnash*m):
-        [n_orig_con | 0 | n_comp (H>=0) | n_ubH (H<=ubH) | n_ubH (upper comp) | n_comp (lower comp)]
-
-    If build_casadi exposes 'off_G_lb', 'off_H_lb', 'off_comp' offsets the
-    exact positions are used directly.  Otherwise falls back to the legacy
-    NCP heuristic so existing callers without the new fields still work.
-
-    Sign convention: lambda_G/H = -lam_g_casadi (CasADi lam <= 0 at active
-    lower bound → MPCC convention is non-negative). lambda_comp keeps CasADi sign.
-
-    Returns
-    -------
-    lambda_G, lambda_H, lambda_comp : np.ndarray (n_comp,) each
+    When a computer solves an optimization problem, it doesn't just
+    find a point; it also finds the "stresses" or "forces" acting at 
+    that point. We slice these forces out of the solver's output so 
+    we can use them for our quality checks.
     """
     lam_g = np.asarray(lam_g).flatten()
     n_orig_con  = problem_info.get('n_orig_con', 0)
@@ -141,46 +123,6 @@ def extract_multipliers(lam_g, n_comp, problem_info):
     return lambda_G, lambda_H, lambda_comp
 
 
-def compute_kkt_residual(x_val, f_sym, g_sym, x_sym, lam_g, lam_x, p_sym=None, p_val=None) -> float:
-    """
-    Compute ||∇_x L||_inf where L = f + lam_g^T g (+ lam_x^T x).
-
-    Parameters
-    ----------
-    x_val : np.ndarray
-    f_sym, g_sym, x_sym : ca.SX symbolic expressions
-    lam_g : np.ndarray
-    lam_x : np.ndarray or None
-    p_sym : ca.SX or None — symbolic parameters (e.g. [t_sym, d_sym])
-    p_val : list or None — concrete parameter values
-
-    Returns
-    -------
-    float
-    """
-    x_val = np.asarray(x_val).flatten()
-    lam_g = np.asarray(lam_g).flatten()
-    
-    grad_f = ca.jacobian(f_sym, x_sym).T
-    J_g = ca.jacobian(g_sym, x_sym)
-    L_grad_expr = grad_f + ca.mtimes(J_g.T, ca.DM(lam_g))
-    
-    if lam_x is not None:
-        lam_x = np.asarray(lam_x).flatten()
-        L_grad_expr = L_grad_expr + ca.DM(lam_x)
-    
-    inputs = [x_sym]
-    if p_sym is not None:
-        inputs.append(p_sym)
-    
-    grad_L_fn = ca.Function('grad_L', inputs, [L_grad_expr])
-    
-    if p_val is not None:
-        grad_L_val = grad_L_fn(x_val, p_val)
-    else:
-        grad_L_val = grad_L_fn(x_val)
-    
-    return float(np.max(np.abs(np.asarray(grad_L_val).flatten())))
 
 
 def multiplier_sign_test(lambda_G, lambda_H, lambda_comp, biactive_idx, tau=1e-6):
@@ -220,40 +162,3 @@ def export_csv(logs: List[IterationLog], filepath: str):
     df.to_csv(filepath, index=False)
 
 
-def export_run_summary(results: List[dict], filepath: str):
-    """Export aggregated run summary dicts to CSV."""
-    import pandas as pd
-    os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
-    df = pd.DataFrame(results)
-    df.to_csv(filepath, index=False)
-
-
-def load_csv(filepath: str):
-    """Load a CSV results file into a DataFrame."""
-    import pandas as pd
-    return pd.read_csv(filepath)
-
-
-def aggregate_summary(df):
-    """
-    Compute mean/median/std for numeric columns and stationarity type counts.
-
-    Returns
-    -------
-    pd.Series
-    """
-    import pandas as pd
-    
-    numeric = df.select_dtypes(include=[np.number])
-    stats = {}
-    
-    for col in numeric.columns:
-        stats[col + '_mean'] = numeric[col].mean()
-        stats[col + '_median'] = numeric[col].median()
-        stats[col + '_std'] = numeric[col].std()
-    
-    if 'stationarity' in df.columns:
-        for stype in ('B', 'S', 'M', 'C', 'W', 'FAIL'):
-            stats['stat_' + stype + '_count'] = int((df['stationarity'] == stype).sum())
-    
-    return pd.Series(stats)

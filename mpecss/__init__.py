@@ -1,17 +1,13 @@
 """
-MPECSS: Smoothed Regularization with Multiplier Check for MPCCs.
+MPECSS: The "Smart Solver" for Complementarity Problems.
 
-This package implements the MPECSS algorithm using CasADi + IPOPT,
-with B-stationarity certification (LPEC), feasibility phase (Phase I),
-and cascading restoration strategies.
-
-Subpackages:
-    phase_1/        - Phase I: feasibility NLP
-    phase_2/        - Phase II: main solver loop, multistart, acceleration, restoration
-    phase_3/        - BNLP polishing, LPEC refinement, B-stationarity checks
-    benchmarks/     - MacMPEC / NOSBENCH loaders, known optima
-    helpers/        - Solver wrapper, utilities, B-stationarity, turbo mode
+Welcome to MPECSS! This package is a powerful engine designed 
+to solve complex mathematical "complementarity" problems. It 
+works by starting with a "Scout Mission" to find feasible 
+areas, then running a "Main Marathon" to find the best 
+solution, and finally applying a "Professional Polish" to 
+ensure the answer is top-quality.
 """
-__version__ = '1.0.2'
+__version__ = '1.0.3'
 
 from mpecss.phase_2.mpecss import run_mpecss  # noqa: F401

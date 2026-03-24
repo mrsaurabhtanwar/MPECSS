@@ -1,15 +1,10 @@
 """
-Reference (best-known) objective values for NOSBENCH and 1% opt_tol gap.
+The "Answer Key" (NOSBENCH): Checking nonlinear results.
 
-NOSBENCH does not publish a "known optimum" table. The paper (Nurkanović et al.,
-Vietnam J. Math 2024) uses:
-  - Acceptance: solution is a *failure* if f > 2 * f_best (factor of two).
-  - f_best = best objective found across their own runs (not published).
-
-To use a strict 1% opt_tol (like MacMPEC), we need a reference f* per problem.
-Options:
-  1. Build from your run: use build_nosbench_reference_csv.py on your results.
-  2. Load from CSV: call load_reference(csv_path) at startup.
+Just like the MacMPEC version, this module keeps track of the 
+best results ever found for the NOSBench problems. It helps 
+us "grade" the solver to see if it's finding high-quality 
+solutions.
 """
 from __future__ import annotations
 

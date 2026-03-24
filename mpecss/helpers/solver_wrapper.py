@@ -1,13 +1,14 @@
 """
-Main entry point for the MPECSS solver stack.
-Re-exports from solver_cache and solver_ipopt to keep
-backward-compatible import paths for the rest of the codebase.
+The Universal Translator: Connecting our math to the computer's brain.
 
-Constraint layout (fixed order produced by problems.build_casadi):
-    g = [ g_orig(x)      (n_orig_con)   original constraints
-          G(x) + delta   (n_comp)       shifted complementarity G
-          H(x) + delta   (n_comp)       shifted complementarity H
-          G(x)*H(x) - t  (n_comp)       relaxed complementarity product ]
+MPECSS is "brainy," but it needs a "muscle" to do the actual 
+number-crunching. That muscle is another piece of software called 
+a "Solver" (like IPOPT).
+
+This module is a "Wrapper." It takes our complex MPEC problem 
+and translates it into a language that the Solver can understand. 
+It also handles the "Constraint Layout" — the specific order 
+in which we tell the solver about the rules of our problem.
 """
 
 import casadi as ca
@@ -18,11 +19,32 @@ from mpecss.helpers.solver_ipopt import (
     solve_with_solver_fallback,
     DEFAULT_IPOPT_OPTS,
 )
+from mpecss.helpers.solver_acceleration import (
+    select_nlp_solver,
+    select_linear_solver_oss,
+    is_sqp_recommended,
+)
+
+# Optional SQP solver (requires qpOASES)
+try:
+    from mpecss.helpers.solver_sqp import (
+        SQPSolver,
+        solve_nlp_sqp,
+        QPOASES_AVAILABLE,
+        SQP_SIZE_THRESHOLD,
+    )
+except ImportError:
+    QPOASES_AVAILABLE = False
+    SQP_SIZE_THRESHOLD = 400
+
 
 def build_universal_nlp_solver(name, n_x, nlp, ipopt_opts=None):
     """
-    Universal open-source NLP builder for all MPEC-SS phases.
-    Builds IPOPT + MUMPS unless otherwise specified.
+    The Universal Builder.
+
+    This is the "factory" that creates a new Solver instance whenever 
+    we need to solve a piece of the problem. It uses IPOPT, which 
+    is a world-class, open-source tool for this kind of work.
     """
     if ipopt_opts is None:
         ipopt_opts = dict(DEFAULT_IPOPT_OPTS)

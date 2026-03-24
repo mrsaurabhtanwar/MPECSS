@@ -1,23 +1,11 @@
 """
-Known optimal values for MacMPEC benchmark problems.
+The "Answer Key" (MacMPEC): Checking our results.
 
-Source: http://wiki.mcs.anl.gov/leyffer/index.php/MacMPEC
-        (Sven Leyffer, Argonne National Laboratory)
-
-Values marked with (I) in the original are infeasible problems — we exclude
-them from solution quality comparisons.
-
-NOTE: 12 problems are MAXIMIZATION in the original AMPL formulation, but
-the .nl.json files store f(x) without negation and IPOPT always minimizes.
-For these problems, the known optimal value stored here is -f*_wiki (the
-negated wiki value) so that it matches what the solver should find.
-Confirmed against official MacMPEC wiki (2012-03-20 revision).
-  Maximization problems: bard2, bilin, design-cent-{1,2,21,3,31,4},
-                         hakonsen, monteiro, monteiroB, taxmcp
-
-Used for:
-    - Validating that MPECSS converges to the correct stationary point
-    - Computing optimality gap = |f_final - f_known| / max(1, |f_known|)
+How do we know if the solver found the right answer? We compare 
+its result to these "known best" values. This module acts as 
+ the answer key for the MacMPEC library, helping us calculate 
+ the "Optimality Gap" — basically, a grade of how close we 
+ got to the perfect answer.
 """
 
 # Known optimal values extracted from bytecode constants

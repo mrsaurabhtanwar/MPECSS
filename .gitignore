@@ -9,6 +9,9 @@ lib/
 share/
 Include/
 pyvenv.cfg
+.workspace-instructions.md
+.github/copilot-instructions.md
+.claude/
 
 # --- Python Caches & Artifacts ---
 __pycache__/
@@ -66,6 +69,11 @@ benchmarks/mpeclib/*
 benchmarks/nosbench/*
 !benchmarks/nosbench/README.md
 
+# --- Verification ---
+# Ignore all results in verification but keep the README
+verification/*
+!verification/README.md
+
 # --- Project-Specific Recovery Artifacts (from previous cleanup) ---
 recovered_clean/
 recovered_pycdc/
@@ -96,3 +104,4 @@ Thumbs.db
 
 # --- Jupyter Notebook ---
 .ipynb_checkpoints
+.pytest_cache/

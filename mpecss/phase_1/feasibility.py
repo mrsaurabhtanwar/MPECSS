@@ -1,3 +1,16 @@
+"""
+Phase I: Finding a starting point that actually "works."
+
+Before we can solve a complex MPEC problem, we need to find a 
+starting point that is "feasible" — meaning it obeys all the 
+basic rules (complementarity).
+
+If the user's initial guess is far away from any valid point, 
+this module goes on a "scout mission" to find a better one. 
+It uses different strategies (like "Pure Product" and "Epigraph") 
+to hunt down a valid starting block.
+"""
+
 import logging
 import time
 from typing import Any, Dict, Optional, Tuple
@@ -30,42 +43,11 @@ def run_feasibility_phase(
     n_random_restarts: int,
 ) -> Dict[str, Any]:
     """
-    Run Phase I feasibility search: find a complementarity-feasible starting point.
+    Step 1: The "Scout Mission" (Feasibility Search).
 
-    Solves up to max_attempts NLP subproblems using three progressively more
-    robust objective formulations:
-      attempt 0: min  sum( (G_i * H_i)^2 )              — pure product
-      attempt 1: min  sum( sqrt( (G_i*H_i)^2 + eps ) )  — smooth L1
-      attempt 2+: epigraph NLP with auxiliary variable t
-
-    After the main loop, if the best complementarity residual is still above
-    _COMP_GOOD_ENOUGH and n_random_restarts > 0, a multi-start search is
-    performed using candidate starting points derived from the bounds.
-
-    Parameters
-    ----------
-    problem : dict
-        Problem specification (must contain 'n_x', 'G_fn', 'H_fn').
-    z0 : array-like
-        Initial point.
-    solver_opts : dict or None
-        IPOPT option overrides passed to the sub-solvers.
-    max_attempts : int
-        Number of NLP attempts in the main loop.
-    n_random_restarts : int
-        Number of random multistart candidates to try if needed.
-
-    Returns
-    -------
-    dict with keys:
-        z_feasible, comp_res, success, cpu_time, obj_val, solver_status,
-        n_attempts, n_x, n_comp, initial_comp_res, final_comp_res,
-        residual_improvement_pct, best_attempt_idx, best_obj_regime,
-        attempt_0_comp_res, attempt_1_comp_res, attempt_2_comp_res,
-        n_restarts_attempted, n_restarts_rejected, best_restart_idx,
-        multistart_improved, ipopt_iter_count, displacement_from_z0,
-        interior_push_frac, unbounded_dims_count, feasibility_achieved,
-        near_feasibility.
+    We try several times to find a valid starting point. If the 
+    first method fails, we try a more robust one. We even try 
+    restarting from random spots if we get stuck.
     """
     from mpecss.helpers.loaders.macmpec_loader import complementarity_residual
 
@@ -155,7 +137,11 @@ def run_feasibility_phase(
 
             _disp = float(np.linalg.norm(z_result - z0)) / _z0_scale
 
-            if comp_res < best_comp and _disp < _MAX_DISPLACEMENT:
+            # Accept if comp_res is better AND either:
+            # 1. Displacement is within limit, OR
+            # 2. comp_res is excellent (< 1e-6) - don't reject great solutions
+            _excellent_comp_res = comp_res < 1e-6
+            if comp_res < best_comp and (_disp < _MAX_DISPLACEMENT or _excellent_comp_res):
                 best_z           = z_result
                 best_comp        = comp_res
                 best_status      = status
@@ -224,7 +210,11 @@ def run_feasibility_phase(
                     _c_r   = complementarity_residual(_z_r, problem)
                     _disp_r = float(np.linalg.norm(_z_r - z0)) / _z0_scale
 
-                    if _c_r < best_comp and _disp_r < _MAX_DISPLACEMENT:
+                    # Accept if comp_res is better AND either:
+                    # 1. Displacement is within limit, OR
+                    # 2. comp_res is excellent (< 1e-6)
+                    _excellent_multistart = _c_r < 1e-6
+                    if _c_r < best_comp and (_disp_r < _MAX_DISPLACEMENT or _excellent_multistart):
                         best_z           = _z_r
                         best_comp        = _c_r
                         best_status      = _s_r
@@ -303,20 +293,12 @@ def _solve_phase_i_nlp(
     z0: np.ndarray,
     attempt: int = 0,
     solver_opts: Optional[Dict[str, Any]] = None,
-) -> Tuple[np.ndarray, float, str]:
+) -> Tuple[np.ndarray, float, str, int]:
     """
-    Build and solve one Phase I NLP subproblem.
+    Step 2: "Building the Scout" (Phase I NLP).
 
-    Three formulations selected by attempt index:
-      attempt == 0:  f = ca.sumsqr(G * H)                  — pure L2
-      attempt == 1:  f = ca.sum1(ca.sqrt((G*H)^2 + eps))   — smooth L1
-      attempt >= 2:  epigraph form: min t s.t. (G_i*H_i)^2 <= t for all i
-
-    Original constraints G >= lbG, H >= lbH are always included.
-
-    Returns
-    -------
-    (z_result, obj_val, status) : (np.ndarray, float, str)
+    This internal helper builds the specific mathematical "lens" 
+    we use to look for a feasible point during each attempt.
     """
     n_x   = problem['n_x']
     n_comp = problem['n_comp']
@@ -342,11 +324,14 @@ def _solve_phase_i_nlp(
     # Add original problem constraints if any
     if n_con > 0:
         info_ref    = problem['build_casadi'](1.0, 0.0, smoothing='product')
-        g_orig_expr = info_ref['g'][:n_con]
-        g_fn_orig   = ca.Function('g_orig', [info_ref['x']], [g_orig_expr])
-        g_parts.append(g_fn_orig(x_sym))
-        lbg_parts.extend(info_ref['lbg'][:n_con])
-        ubg_parts.extend(info_ref['ubg'][:n_con])
+        # Use n_orig_con from build_casadi if available (fixes NOSBench dimension mismatch)
+        n_orig = info_ref.get('n_orig_con', n_con)
+        if n_orig > 0:
+            g_orig_expr = info_ref['g'][:n_orig]
+            g_fn_orig   = ca.Function('g_orig', [info_ref['x']], [g_orig_expr])
+            g_parts.append(g_fn_orig(x_sym))
+            lbg_parts.extend(info_ref['lbg'][:n_orig])
+            ubg_parts.extend(info_ref['ubg'][:n_orig])
 
     # G >= lbG only for BOUNDED components; free G (MCP) has no sign restriction.
     lbG_eff = problem.get('lbG_eff', [0.0] * n_comp)
@@ -430,11 +415,14 @@ def _solve_phase_i_nlp(
         # Include original constraints on x_orig
         if n_con > 0:
             info_ref    = problem['build_casadi'](1.0, 0.0, smoothing='product')
-            g_fn_orig   = ca.Function('g_orig', [info_ref['x']],
-                                      [info_ref['g'][:n_con]])
-            g_aug_parts.append(g_fn_orig(x_orig))
-            lbg_aug.extend(info_ref['lbg'][:n_con])
-            ubg_aug.extend(info_ref['ubg'][:n_con])
+            # Use n_orig_con from build_casadi if available (fixes NOSBench dimension mismatch)
+            n_orig = info_ref.get('n_orig_con', n_con)
+            if n_orig > 0:
+                g_fn_orig   = ca.Function('g_orig', [info_ref['x']],
+                                          [info_ref['g'][:n_orig]])
+                g_aug_parts.append(g_fn_orig(x_orig))
+                lbg_aug.extend(info_ref['lbg'][:n_orig])
+                ubg_aug.extend(info_ref['ubg'][:n_orig])
 
         # G_aug >= lbG only for bounded (non-free) components
         if bounded_G_idx:

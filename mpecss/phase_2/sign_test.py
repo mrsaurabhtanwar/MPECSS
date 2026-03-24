@@ -1,8 +1,13 @@
 """
-Sign-test policy helpers for Phase II.
+Stationarity Testing: Measuring the "Quality" of our Answer.
 
-This module centralizes biactive detection and multiplier sign checks so that
-`mpecss.py` can focus on orchestration.
+How do we know if we found the best possible answer? We use a series 
+of mathematical tests called "Stationarity Checks."
+
+This module does the "heavy lifting" for these checks:
+1. It identifies "Biactive" points (where the problem is most complex).
+2. It checks the "multipliers" (the forces acting on the solution)
+   to see if they all point in the right directions (the "Sign Test").
 """
 
 from typing import Any, Dict, Tuple, cast
@@ -13,10 +18,10 @@ from mpecss.helpers.utils import extract_multipliers, multiplier_sign_test
 
 def evaluate_iteration_stationarity(z_k, lam_g, problem, problem_info, n_comp, t_k, sta_tol, tau, biactive_tol_floor=1e-8):
     """
-    Evaluate per-iteration stationarity data from a solved NLP subproblem.
-
-    Returns multipliers in MPCC sign convention, biactive index set,
-    complementarity residual, and sign-test outcome.
+    Step-by-Step Quality Check:
+    1. Extract the "Forces" (multipliers) acting on the solution.
+    2. Find the "Intersections" (biactive indices) where the problem is sharp.
+    3. Run the "Sign Test" to see if we reached the Gold Standard (S-stationarity).
     """
     # Auto-compute sta_tol if not provided
     if sta_tol is None:

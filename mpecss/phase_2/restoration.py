@@ -1,13 +1,15 @@
 """
-Restoration heuristics for MPECSS.
+Restoration: Helping the Solver when it gets Stuck.
 
-Three restoration strategies for function-based G(x)/H(x):
-    1. random_perturb: Jacobian-guided perturbation of biactive variables
-    2. quadratic_regularizer: penalty term pulling biactive G, H apart
-    3. directional_escape: move along sign-based direction using Jacobians
+MPEC problems are hard because the "complementarity constraints" (G * H = 0)
+create a series of "valleys" and "walls." Sometimes the solver gets stuck 
+on a wall or at the bottom of a steep valley where it can't move.
 
-Each function returns a new initial point z_new to be used for warm-starting
-the next subproblem solve (with the same t_k).
+Restoration heuristics are "tricks" to nudge the solver out of these 
+difficult spots. We have three main ways to do this:
+1. random_perturb: A tiny random push to see if things get easier nearby.
+2. quadratic_regularizer: Adding a "repelling force" to push G and H apart.
+3. directional_escape: Using math (gradients) to find the smartest way out.
 """
 
 import logging
@@ -74,7 +76,11 @@ def _get_jacobians(problem):
 
 def random_perturb(z, biactive_idx, problem, eps=0.01, seed=None):
     """
-    Jacobian-guided perturbation of biactive variables.
+    Strategy 1: The "Nudge" (Random Perturbation).
+
+    If we don't know which way to go, we take a tiny, smart random step. 
+    We look at the "slopes" (gradients) of the problem and try to move
+    in a direction that might open up a new path.
 
     For each biactive index i, computes the gradient of G_i or H_i w.r.t. x,
     then perturbs z in that gradient direction to push one function positive.
@@ -158,7 +164,12 @@ def random_perturb(z, biactive_idx, problem, eps=0.01, seed=None):
 
 def quadratic_regularizer(z, t_k, delta_k, problem, biactive_idx, gamma=1.0, solver_opts=None, max_tries=3):
     """
-    Quadratic regularisation that adds a penalty pulling G and H apart.
+    Strategy 2: The "Separator" (Quadratic Regularization).
+
+    If G and H are stuck together at zero (biactive), we temporarily add 
+    a "penalty" to the problem that says: "It's expensive for G and H to 
+    be the same!" This forces the solver to push them apart, which 
+    often helps it find the real solution.
 
     For biactive indices, adds:
         gamma * sum_i (G_i(x) - H_i(x))^2 / (|G_i(x)| + |H_i(x)| + eps)
@@ -262,7 +273,12 @@ def quadratic_regularizer(z, t_k, delta_k, problem, biactive_idx, gamma=1.0, sol
 
 def directional_escape(z, lambda_G, lambda_H, biactive_idx, problem, step_size=0.1, max_tries=3):
     """
-    Directional escape using sign-based direction computed via Jacobians.
+    Strategy 3: The "Smart Exit" (Directional Escape).
+
+    This is the most mathematical approach. We use the "multipliers" 
+    (which tell us how hard we are pushing against the constraints) 
+     to figure out the exact direction that is most likely to lead 
+    to a better solution. It's like having a compass in a fog.
 
     For biactive index i, computes:
         d_i = sign(lambda_G_i - lambda_H_i)
@@ -376,10 +392,9 @@ def run_restoration(z, t_k, delta_k, problem, biactive_idx, lambda_G, lambda_H, 
 
     Returns
     -------
-    z_new : np.ndarray
-        New iterate.
-    sol : dict or None
-        Solution dict from re-solve (if applicable).
+    dict
+        A dictionary containing at least 'z_k' (the restored iterate)
+        and potentially 't_k', 'delta_k', and other strategy-specific outputs.
     """
     params = params or {}
     _smoothing = params.get('smoothing', 'product')

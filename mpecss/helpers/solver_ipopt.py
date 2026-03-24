@@ -1,6 +1,11 @@
 """
-IPOPT interior-point solver functions and automatic fallback wrappers.
-Builds CasADi NLP instances, runs IPOPT, and handles solver fallbacks.
+The Engine Room: Running the actual math solver (IPOPT).
+
+This module is where the "heavy lifting" happens. It:
+1. Builds a custom solver for each step of the problem.
+2. Runs the solver (IPOPT) and tracks its performance.
+3. Provides a "Safety Net" — if the first solver fails, it 
+   automatically tries different settings to get across the finish line.
 """
 
 import time
@@ -11,7 +16,6 @@ from mpecss.helpers.solver_cache import (
     _TEMPLATE_CACHE,
     _SOLVER_CACHE,
     _PARAMETRIC_CACHE,
-    _LEAKED_SOLVERS,
     _get_template,
     _tol_bucket,
     _t_round,
@@ -65,12 +69,12 @@ _SOLVER_FALLBACK_CHAIN = [
 
 def _get_concrete_solver(problem, t_k, delta_k, solver_opts, warm_start, smoothing='product'):
     """
-    Get or create a CasADi NLP solver for a given (t_k, delta_k) pair.
+    Step 1: "Building the Engine."
 
-    SX path  (n_x < 500):  substitutes concrete (t, d) values into the
-                            symbolic template — cheap to rebuild.
-    MX path  (n_x >= 500): compiles a parametric solver with p=[t, d] once,
-                            then reuses it for all homotopy iterations.
+    We create a specific solver instance for the current level of 
+    difficulty (t_k). If the problem is small, we build it from 
+    scratch; if it's large, we use a "Parametric" version that 
+    is faster and more memory-efficient.
     """
     prob_name = problem.get('name', 'unknown')
     n_x = problem['n_x']
@@ -164,7 +168,11 @@ def _get_concrete_solver(problem, t_k, delta_k, solver_opts, warm_start, smoothi
 def solve_smooth_subproblem(z0, t_k, delta_k, problem, solver_opts=None,
                              lam_g0=None, lam_x0=None, smoothing='product'):
     """
-    Solve one smoothed NLP subproblem via CasADi + IPOPT.
+    Step 2: "Starting the Run."
+
+    This function actually tells the computer to start crunching 
+    the numbers. It sets up the starting point and monitors 
+    the solver until it finishes or runs out of time.
 
     Parameters
     ----------
@@ -277,27 +285,32 @@ def is_solver_success(status):
 def solve_with_solver_fallback(z0, t_k, delta_k, problem, solver_opts=None,
                                 lam_g0=None, lam_x0=None, smoothing='product'):
     """
-    Solve a smoothed NLP with automatic open-source solver fallback.
+    Step 3: "The Safety Net."
 
-    Tries the primary solver first. On failure (status in
-    _FALLBACK_TRIGGER_STATUSES) retries with alternatives from
-    _SOLVER_FALLBACK_CHAIN (Mehrotra, relaxed tolerances).
-    As a last resort, retries with the Fischer-Burmeister reformulation.
-    Parameters and return value are identical to solve_smooth_subproblem().
+    If the first attempt fails, we don't give up. This function 
+    cycles through backup plans (different algorithms or mathematical 
+    formulations) until it finds a way to converge.
     """
     n_x = problem.get('n_x', 0)
     
-    # Always use IPOPT for robustness
+    # Try SQP+qpOASES for small problems first
+    try:
+        from mpecss.helpers.solver_acceleration import is_sqp_recommended
+        if is_sqp_recommended(n_x):
+            sqp_sol = _try_sqp_solve(z0, t_k, delta_k, problem, lam_g0, lam_x0, smoothing)
+            if sqp_sol is not None and is_solver_success(sqp_sol['status']):
+                logger.debug(f"SQP+qpOASES succeeded for n_x={n_x}")
+                return sqp_sol
+            elif sqp_sol is not None:
+                logger.debug(f"SQP failed ({sqp_sol['status']}), falling back to IPOPT")
+    except ImportError:
+        pass
+    
+    # Primary solver: IPOPT+MUMPS
     sol = solve_smooth_subproblem(z0, t_k, delta_k, problem, solver_opts=solver_opts, lam_g0=lam_g0, lam_x0=lam_x0, smoothing=smoothing)
-        
+
     if is_solver_success(sol['status']):
         return sol
-    
-    # Fallback to IPOPT directly on failure
-    if not is_solver_success(sol['status']):
-        sol = solve_smooth_subproblem(z0, t_k, delta_k, problem, solver_opts=solver_opts, lam_g0=lam_g0, lam_x0=lam_x0, smoothing=smoothing)
-        if is_solver_success(sol['status']):
-            return sol
 
     if sol['status'] not in _FALLBACK_TRIGGER_STATUSES:
         return sol
@@ -338,22 +351,63 @@ def solve_with_solver_fallback(z0, t_k, delta_k, problem, solver_opts=None,
     return best_sol
 
 
+def _try_sqp_solve(z0, t_k, delta_k, problem, lam_g0, lam_x0, smoothing):
+    """
+    Attempt to solve the smoothed NLP using SQP+qpOASES.
+    
+    Returns solution dict on success, None on failure.
+    """
+    try:
+        from mpecss.helpers.solver_sqp import SQPSolver, QPOASES_AVAILABLE
+        from mpecss.helpers.solver_cache import _get_template
+        
+        if not QPOASES_AVAILABLE:
+            return None
+        
+        # Get the smoothed problem template
+        t_sym, d_sym, info = _get_template(problem, smoothing)
+        
+        # Substitute concrete (t_k, delta_k) values
+        f_concrete = ca.substitute([info['f']], [t_sym, d_sym], [t_k, delta_k])[0]
+        g_concrete = ca.substitute([info['g']], [t_sym, d_sym], [t_k, delta_k])[0]
+        
+        x_sym = info['x']
+        n_x = x_sym.shape[0]
+        
+        # Build problem dict for SQP
+        sqp_problem = {
+            'n_x': n_x,
+            'n_g': g_concrete.shape[0],
+            'f_fun': ca.Function('f', [x_sym], [f_concrete]),
+            'g_fun': ca.Function('g', [x_sym], [g_concrete]),
+            'lbx': info['lbx'],
+            'ubx': info['ubx'],
+            'lbg': info['lbg'],
+            'ubg': info['ubg'],
+        }
+        
+        # Solve with SQP
+        solver = SQPSolver(sqp_problem, sqp_opts={'print_level': 0})
+        sqp_sol = solver.solve(z0, lam_g0, lam_x0)
+        
+        # Convert to standard solution format
+        return {
+            'z_k': sqp_sol['x'],
+            'lam_g': sqp_sol['lam_g'],
+            'lam_x': sqp_sol['lam_x'],
+            'f_val': sqp_sol['f'],
+            'status': sqp_sol['status'],
+            'cpu_time': sqp_sol['cpu_time'],
+            'g_val': sqp_sol['g'],
+            'problem_info': info,
+            'iter_count': sqp_sol['iter_count'],
+        }
+        
+    except Exception as e:
+        logger.debug(f"SQP solve failed: {e}")
+        return None
+
+
 def _zero_fallback(z0, n_x, n_g):
     """Return zero-filled fallback arrays for failed solves."""
     return (z0.copy(), np.zeros(n_g), np.zeros(n_x), float('inf'), np.zeros(n_g))
-
-
-def _oom_result(z0, n_x, n_g, info):
-    """Return a structured OOM result dict."""
-    z_k, lam_g, lam_x, f_val, g_val = _zero_fallback(z0, n_x, n_g)
-    return {
-        'z_k': z_k,
-        'lam_g': lam_g,
-        'lam_x': lam_x,
-        'f_val': f_val,
-        'status': 'OOM',
-        'cpu_time': 0.0,
-        'g_val': g_val,
-        'problem_info': info,
-        'iter_count': -1
-    }

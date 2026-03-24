@@ -1,6 +1,10 @@
 """
-Caching layer for CasADi NLP templates and compiled IPOPT solvers.
-Kept separate from solver_ipopt to avoid circular imports.
+The "Memory Bank": Saving time by remembering solvers.
+
+Building a math solver can be slow. This module acts as a 
+filing cabinet — it saves the "blueprint" (template) of a 
+problem so we don't have to rebuild it every single time 
+the difficulty (t_k) changes.
 """
 
 import math
@@ -16,7 +20,6 @@ _TEMPLATE_CACHE: Dict[str, Any] = {}
 _SOLVER_CACHE: Dict[str, Any] = {}
 _INFO_CACHE: Dict[str, Any] = {}
 _PARAMETRIC_CACHE: Dict[str, Any] = {}
-_LEAKED_SOLVERS: list = []
 
 
 def clear_solver_cache():
@@ -25,10 +28,6 @@ def clear_solver_cache():
     _SOLVER_CACHE.clear()
     _INFO_CACHE.clear()
     _PARAMETRIC_CACHE.clear()
-    # CRITICAL FIX: _LEAKED_SOLVERS was never cleared, causing unbounded memory growth
-    # when Phase I solves returned Infeasible_Problem_Detected. Each CasADi solver
-    # can hold 100s of MB, and these accumulated across all problems.
-    _LEAKED_SOLVERS.clear()
     import gc
     gc.collect()
 
@@ -44,9 +43,12 @@ def _evict_problem_from_cache(prob_name):
 
 def _get_template(problem, smoothing='product'):
     """
-    Return (t_sym, d_sym, info_sym) for problem, building and caching once.
-    Uses symbolic t/d so the NLP graph is compiled only once and reused
-    across all homotopy iterations.
+    Step 1: "The Master Blueprint."
+
+    This is where we build the core math structure of the problem one 
+    time. We leave "placeholders" for the difficulty level (t) and 
+    shift (delta), so we can reuse this same blueprint for the whole 
+    homotopy process.
     """
     prob_name = problem.get('name', 'unknown')
     n_x = problem.get('n_x', 0)
